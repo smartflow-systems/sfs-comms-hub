@@ -313,7 +313,7 @@ app.post("/api/notify/webhook", requireCommsKey, notifyLimiter, (req, res) => {
   if (!event) {
     return res.status(400).json({ success: false, message: "event is required" });
   }
-  console.log(`[comms] WEBHOOK event=${event}`, data ? JSON.stringify(data).slice(0, 120) : "");
+  console.log("[comms] WEBHOOK event=%s", String(event), data ? JSON.stringify(data).slice(0, 120) : "");
   res.json({ success: true, event, received: true });
 });
 
