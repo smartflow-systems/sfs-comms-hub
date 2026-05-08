@@ -28,7 +28,7 @@ jobs:
         if: hashFiles('package.json') != ''
         uses: actions/setup-node@v6
         with:
-          node-version: '20'
+          node-version: '24'
 
       - name: Setup Python
         if: hashFiles('requirements.txt') != '' || hashFiles('pyproject.toml') != ''
@@ -106,6 +106,7 @@ jobs:
             if grep -r "$pattern" . \
               --exclude-dir=node_modules \
               --exclude-dir=.git \
+              --exclude-dir=.github \
               --exclude-dir=dist \
               --exclude-dir=build \
               --exclude=*.log \

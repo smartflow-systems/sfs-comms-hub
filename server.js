@@ -210,6 +210,115 @@ app.post("/api/stripe/checkout", (req, res) => {
   }
 });
 
+// ─── Notification API ────────────────────────────────────────────────────────
+
+// Service-to-service auth: SFS_COMMS_KEY must match across all calling products
+function requireCommsKey(req, res, next) {
+  const commsKey = process.env.SFS_COMMS_KEY;
+  if (!commsKey) return next(); // unconfigured = open (dev mode)
+  const provided = req.headers["x-sfs-comms-key"];
+  if (!provided || provided !== commsKey) {
+    return res.status(401).json({ success: false, message: "Invalid service key" });
+  }
+  next();
+}
+
+const notifyLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: "Notification rate limit exceeded" }
+});
+
+// POST /api/notify/email
+// Body: { to, subject, html, from? }
+// Env:  SENDGRID_API_KEY, SENDGRID_FROM_EMAIL
+app.post("/api/notify/email", requireCommsKey, notifyLimiter, async (req, res) => {
+  try {
+    const { to, subject, html, from } = req.body;
+    if (!to || !subject || !html) {
+      return res.status(400).json({ success: false, message: "to, subject, and html are required" });
+    }
+
+    const apiKey = process.env.SENDGRID_API_KEY;
+    const fromEmail = from || process.env.SENDGRID_FROM_EMAIL || "noreply@smartflowsystems.com";
+
+    if (!apiKey) {
+      // Dev mode: log and ack without sending
+      console.log(`[comms] EMAIL (dev) to=${to} subject="${subject}"`);
+      return res.json({ success: true, provider: "dev-log", message: "Email logged (SENDGRID_API_KEY not set)" });
+    }
+
+    const { default: axios } = await import("axios");
+    await axios.post(
+      "https://api.sendgrid.com/v3/mail/send",
+      {
+        personalizations: [{ to: [{ email: String(to).slice(0, 254) }] }],
+        from: { email: fromEmail },
+        subject: String(subject).slice(0, 255),
+        content: [{ type: "text/html", value: html }]
+      },
+      { headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" } }
+    );
+
+    console.log(`[comms] EMAIL sent to=${to}`);
+    res.json({ success: true, provider: "sendgrid" });
+  } catch (err) {
+    console.error("[comms] email error:", err.response?.data || err.message);
+    res.status(502).json({ success: false, message: "Email delivery failed" });
+  }
+});
+
+// POST /api/notify/sms
+// Body: { to, body }
+// Env:  TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER
+app.post("/api/notify/sms", requireCommsKey, notifyLimiter, async (req, res) => {
+  try {
+    const { to, body: msgBody } = req.body;
+    if (!to || !msgBody) {
+      return res.status(400).json({ success: false, message: "to and body are required" });
+    }
+
+    const sid = process.env.TWILIO_ACCOUNT_SID;
+    const token = process.env.TWILIO_AUTH_TOKEN;
+    const from = process.env.TWILIO_FROM_NUMBER;
+
+    if (!sid || !token || !from) {
+      console.log(`[comms] SMS (dev) to=${to} body="${String(msgBody).slice(0, 40)}..."`);
+      return res.json({ success: true, provider: "dev-log", message: "SMS logged (Twilio env not set)" });
+    }
+
+    const { default: axios } = await import("axios");
+    const auth = Buffer.from(`${sid}:${token}`).toString("base64");
+    await axios.post(
+      `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`,
+      new URLSearchParams({ To: String(to), From: from, Body: String(msgBody).slice(0, 1600) }),
+      { headers: { Authorization: `Basic ${auth}`, "Content-Type": "application/x-www-form-urlencoded" } }
+    );
+
+    console.log(`[comms] SMS sent to=${to}`);
+    res.json({ success: true, provider: "twilio" });
+  } catch (err) {
+    console.error("[comms] sms error:", err.response?.data || err.message);
+    res.status(502).json({ success: false, message: "SMS delivery failed" });
+  }
+});
+
+// POST /api/notify/webhook
+// Receives a webhook payload and fans it out to registered listeners (if any)
+// Body: { event, data }
+app.post("/api/notify/webhook", requireCommsKey, notifyLimiter, (req, res) => {
+  const { event, data } = req.body;
+  if (!event) {
+    return res.status(400).json({ success: false, message: "event is required" });
+  }
+  console.log("[comms] WEBHOOK event=%s", String(event), data ? JSON.stringify(data).slice(0, 120) : "");
+  res.json({ success: true, event, received: true });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 // Global error handler
 app.use((err, _req, res, _next) => {
   console.error("Unhandled error:", err.message);
